@@ -23,6 +23,7 @@ from mcp_trove.tools.init_vault import init_vault
 from mcp_trove.tools.listing import list_entries, rebuild_index
 from mcp_trove.tools.remove import remove_entry
 from mcp_trove.tools.search import search
+from mcp_trove.tools.update_secret import update_secret
 
 server = Server("mcp-trove")
 
@@ -108,6 +109,38 @@ TOOLS = [
             "properties": {
                 "name": {"type": "string", "description": "Secret title or slug."},
                 "category": {"type": "string", "description": "Optional category to disambiguate."},
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="trove_update_secret",
+        description=(
+            "Update an existing secret without re-supplying it whole: set/remove "
+            "fields, change notes or tags, then re-encrypt. Decryption needs the "
+            "private key; re-encryption needs recipients. Preserves the created date."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Secret title or slug."},
+                "category": {"type": "string", "description": "Category to disambiguate."},
+                "set_fields": {
+                    "type": "object",
+                    "description": "Fields to add or overwrite.",
+                    "additionalProperties": {"type": "string"},
+                },
+                "remove_fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Field names to drop.",
+                },
+                "notes": {"type": "string", "description": "New notes (omit to keep; '' clears)."},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Replacement tag list (omit to keep).",
+                },
             },
             "required": ["name"],
         },
@@ -205,6 +238,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif name == "trove_get_secret":
             result = get_secret(name=arguments["name"], category=arguments.get("category"))
+        elif name == "trove_update_secret":
+            # Only forward "notes" when supplied, so the sentinel "keep current" path works.
+            update_kwargs = {
+                "name": arguments["name"],
+                "category": arguments.get("category"),
+                "set_fields": arguments.get("set_fields"),
+                "remove_fields": arguments.get("remove_fields"),
+                "tags": arguments.get("tags"),
+            }
+            if "notes" in arguments:
+                update_kwargs["notes"] = arguments["notes"]
+            result = update_secret(**update_kwargs)
         elif name == "trove_search":
             result = search(
                 query=arguments.get("query", ""),
