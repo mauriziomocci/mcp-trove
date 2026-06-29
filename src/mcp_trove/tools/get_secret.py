@@ -7,23 +7,11 @@ values are returned to the caller and never written back to disk.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Optional
 
 from mcp_trove.config import load_config
 from mcp_trove.crypto import decrypt_with, read_secret_key
-from mcp_trove.vault import relative, secret_paths, slugify
-
-
-def _resolve(vault: Path, name: str, category: Optional[str]) -> Optional[Path]:
-    """Find the ``.age`` payload for ``name`` (a slug or title), optionally scoped
-    to ``category``. Returns the path or None if not found / ambiguous-first-hit."""
-    slug = slugify(name)
-    if category:
-        age_path, _ = secret_paths(vault, category, slug)
-        return age_path if age_path.exists() else None
-    matches = list((vault / "secrets").rglob(f"{slug}.age"))
-    return matches[0] if matches else None
+from mcp_trove.vault import relative, resolve_secret
 
 
 def get_secret(name: str, category: Optional[str] = None) -> dict[str, Any]:
@@ -34,11 +22,22 @@ def get_secret(name: str, category: Optional[str] = None) -> dict[str, Any]:
         category: Optional category to disambiguate.
 
     Returns:
-        A dict with ``fields`` and ``notes`` on success, or an ``error`` key.
+        A dict with ``fields`` and ``notes`` on success, or an ``error`` key. When
+        the name matches secrets in more than one category and none was given, the
+        error lists the candidate categories instead of guessing.
     """
     config = load_config()
-    age_path = _resolve(config.vault_path, name, category)
+    age_path, candidates = resolve_secret(config.vault_path, name, category)
     if age_path is None:
+        if len(candidates) > 1:
+            cats = ", ".join(sorted(candidates))
+            return {
+                "error": (
+                    f"'{name}' is ambiguous — it exists in categories: {cats}. "
+                    "Re-run with the category to disambiguate."
+                ),
+                "candidates": sorted(candidates),
+            }
         return {"error": config.pack.msg("not_found", path=name)}
 
     try:

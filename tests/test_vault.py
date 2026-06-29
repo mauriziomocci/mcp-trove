@@ -21,3 +21,19 @@ def test_frontmatter_roundtrip():
 
 def test_parse_frontmatter_absent():
     assert parse_frontmatter("no frontmatter here") == {}
+
+
+def test_frontmatter_handles_tricky_values():
+    # Colons, hashes and commas inside a value must survive the round-trip.
+    meta = {"title": "DB: host #1, port 5432", "tags": ["a, b", "c#d"]}
+    parsed = parse_frontmatter(build_frontmatter(meta) + "\n\nbody")
+    assert parsed["title"] == "DB: host #1, port 5432"
+    assert parsed["tags"] == ["a, b", "c#d"]
+
+
+def test_parse_frontmatter_legacy_inline_list():
+    # Files written by the previous hand-rolled emitter used flow-style lists.
+    legacy = "---\ntitle: X\ntags: [a, b]\n---\n\nbody"
+    parsed = parse_frontmatter(legacy)
+    assert parsed["title"] == "X"
+    assert parsed["tags"] == ["a", "b"]

@@ -22,6 +22,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
+
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 _FRONTMATTER = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 
@@ -38,57 +40,42 @@ def slugify(text: str) -> str:
     return slug or "untitled"
 
 
-def _yaml_scalar(value: Any) -> str:
-    """Render a scalar for our minimal frontmatter writer."""
-    s = str(value)
-    if s == "" or any(c in s for c in ":#") or s != s.strip():
-        return f'"{s}"'
-    return s
-
-
 def build_frontmatter(meta: dict[str, Any]) -> str:
     """Serialise a metadata dict into a YAML frontmatter block.
 
-    Lists render inline (``[a, b]``); ``None``/empty values are skipped. Key
-    order is preserved as given by the caller.
+    Delegates to a real YAML emitter (PyYAML) so arbitrary strings — values with
+    colons, hashes, commas, unicode — round-trip safely instead of relying on a
+    hand-rolled escaper. ``None``/empty values are skipped; key order is preserved.
     """
-    lines = ["---"]
-    for key, value in meta.items():
-        if value is None or value == "":
-            continue
-        if isinstance(value, (list, tuple)):
-            if not value:
-                continue
-            inline = ", ".join(_yaml_scalar(v) for v in value)
-            lines.append(f"{key}: [{inline}]")
-        else:
-            lines.append(f"{key}: {_yaml_scalar(value)}")
-    lines.append("---")
-    return "\n".join(lines)
+    filtered = {
+        key: value
+        for key, value in meta.items()
+        if value is not None and value != "" and not (isinstance(value, (list, tuple)) and not value)
+    }
+    body = yaml.safe_dump(
+        filtered,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    ).strip()
+    return f"---\n{body}\n---"
 
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
     """Parse a leading YAML frontmatter block into a dict.
 
-    Handles the subset this project emits: scalars and inline ``[a, b]`` lists.
-    Returns an empty dict when no frontmatter is present.
+    Uses a real YAML loader, so it reads anything :func:`build_frontmatter` emits
+    plus legacy inline ``[a, b]`` lists from earlier vault files. Returns an empty
+    dict when no frontmatter is present or the block fails to parse.
     """
     match = _FRONTMATTER.match(text)
     if not match:
         return {}
-    data: dict[str, Any] = {}
-    for line in match.group(1).splitlines():
-        if ":" not in line:
-            continue
-        key, _, val = line.partition(":")
-        key = key.strip()
-        val = val.strip()
-        if val.startswith("[") and val.endswith("]"):
-            items = [v.strip().strip('"') for v in val[1:-1].split(",")]
-            data[key] = [v for v in items if v]
-        else:
-            data[key] = val.strip('"')
-    return data
+    try:
+        data = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def today_iso() -> str:
@@ -113,6 +100,28 @@ def secret_paths(vault: Path, category: str, slug: str) -> tuple[Path, Path]:
     """Resolve the ``(payload.age, meta.yaml)`` pair for a secret."""
     base = Path(vault, "secrets", slugify(category))
     return base / f"{slug}.age", base / f"{slug}.meta.yaml"
+
+
+def resolve_secret(
+    vault: Path, name: str, category: Optional[str]
+) -> tuple[Optional[Path], set[str]]:
+    """Locate the ``.age`` payload for ``name`` (a slug or title).
+
+    Returns a ``(path, categories)`` pair. ``path`` is the resolved payload, or
+    ``None`` when nothing matched or the match is ambiguous. ``categories`` lists
+    every category whose folder holds a payload with this slug — used by callers
+    to report an ambiguity ("exists in aws and gcp; pass the category") instead of
+    silently picking the first hit.
+    """
+    slug = slugify(name)
+    if category:
+        age_path, _ = secret_paths(vault, category, slug)
+        return (age_path if age_path.exists() else None), set()
+    matches = list((vault / "secrets").rglob(f"{slug}.age"))
+    categories = {m.parent.name for m in matches}
+    if len(matches) == 1:
+        return matches[0], categories
+    return None, categories
 
 
 # ---------------------------------------------------------------------------
