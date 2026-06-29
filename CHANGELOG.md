@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `trove_update_secret` tool: partially update an existing secret (set/remove
+  fields, change notes or tags) and re-encrypt, without re-supplying the whole
+  payload. Preserves the `created` date; decryption needs the private key,
+  re-encryption needs recipients.
 - `trove` CLI bundled with the package (`[project.scripts]`): read and browse the
   vault from a terminal without a running MCP client and without an external
   `age` binary (decryption via the bundled `pyrage`). Subcommands `get`
@@ -17,6 +21,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeping the value off the terminal. Reuses the existing `get_secret`,
   `list_entries` and `search` functions — no new crypto. Exit codes: 0 ok,
   1 application error, 2 if `TROVE_PATH` is unset.
+
+### Changed
+
+- Frontmatter is now read and written through PyYAML instead of a hand-rolled
+  parser, so values with colons, hashes, commas or unicode round-trip safely.
+  Backward compatible: legacy inline `[a, b]` lists still parse. Adds a `pyyaml`
+  dependency.
+- `trove_init` auto-enables the pre-commit hook (`git config core.hooksPath
+  .githooks`) when the vault is a git repo, instead of only printing a hint; if a
+  different hooks path is already set it is left untouched with a warning.
+- `trove_doctor` adds a `git_remote_present` reminder (cleartext metadata gets
+  pushed; keep the remote private) and no longer flags OS noise (`.DS_Store`,
+  `Thumbs.db`) under `secrets/` as a cleartext-secret critical.
+
+### Fixed
+
+- `trove_get_secret` (and the `trove get` CLI) no longer silently return the
+  first match when a slug exists in multiple categories: it now errors and lists
+  the candidate categories so the caller can disambiguate.
 
 ### Documentation
 

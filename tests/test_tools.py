@@ -1,12 +1,16 @@
 """Integration tests for the trove tools over an isolated vault."""
 
+import subprocess
+
 from mcp_trove.tools.add_secret import add_secret
 from mcp_trove.tools.add_snippet import add_snippet
 from mcp_trove.tools.doctor import doctor
 from mcp_trove.tools.get_secret import get_secret
+from mcp_trove.tools.init_vault import init_vault
 from mcp_trove.tools.listing import list_entries, rebuild_index
 from mcp_trove.tools.remove import remove_entry
 from mcp_trove.tools.search import search
+from mcp_trove.tools.update_secret import update_secret
 
 
 def test_init_creates_layout(vault):
@@ -91,6 +95,73 @@ def test_remove_secret_deletes_both_files(vault):
     assert not age.exists() and not meta.exists()
 
 
+def test_get_secret_ambiguous_lists_candidates(vault):
+    add_secret(category="aws", title="Deploy key", fields={"k": "v1"})
+    add_secret(category="gcp", title="Deploy key", fields={"k": "v2"})
+    res = get_secret(name="Deploy key")  # no category -> ambiguous
+    assert "error" in res
+    assert set(res["candidates"]) == {"aws", "gcp"}
+    # Disambiguating by category resolves it.
+    ok = get_secret(name="Deploy key", category="gcp")
+    assert ok["fields"] == {"k": "v2"}
+
+
+def test_update_secret_merges_and_preserves_created(vault):
+    add_secret(category="aws", title="Prod", fields={"user": "root", "password": "old"}, notes="n")
+    before = get_secret(name="Prod", category="aws")
+    created = (vault / "secrets" / "aws" / "prod.meta.yaml").read_text()
+
+    res = update_secret(name="Prod", category="aws", set_fields={"password": "new"})
+    assert "error" not in res and res["fields_changed"] == ["password"]
+
+    after = get_secret(name="Prod", category="aws")
+    assert after["fields"] == {"user": "root", "password": "new"}  # merged, not replaced
+    assert after["notes"] == "n"  # notes kept when omitted
+    # created date is preserved across the update.
+    created_line = [ln for ln in created.splitlines() if ln.startswith("created:")][0]
+    new_created = (vault / "secrets" / "aws" / "prod.meta.yaml").read_text()
+    assert created_line in new_created
+    assert before["fields"]["password"] == "old"
+
+
+def test_update_secret_remove_field_and_clear_notes(vault):
+    add_secret(category="aws", title="Prod", fields={"a": "1", "b": "2"}, notes="keep?")
+    update_secret(name="Prod", category="aws", remove_fields=["b"], notes="")
+    after = get_secret(name="Prod", category="aws")
+    assert after["fields"] == {"a": "1"}
+    assert after["notes"] == ""
+
+
+def test_init_enables_hook_in_git_repo(tmp_path, monkeypatch):
+    vault_dir = tmp_path / "gitvault"
+    vault_dir.mkdir()
+    subprocess.run(["git", "-C", str(vault_dir), "init", "-q"], check=True)
+    monkeypatch.setenv("TROVE_PATH", str(vault_dir))
+    monkeypatch.setenv("TROVE_KEY_PATH", str(tmp_path / "k" / "key"))
+    from mcp_trove.config import _reset_config
+
+    _reset_config()
+    res = init_vault(lang="en")
+    assert res["hooks_enabled"] is True
+    got = subprocess.run(
+        ["git", "-C", str(vault_dir), "config", "--local", "--get", "core.hooksPath"],
+        capture_output=True,
+        text=True,
+    )
+    assert got.stdout.strip() == ".githooks"
+    _reset_config()
+
+
+def test_doctor_flags_git_remote(vault):
+    subprocess.run(["git", "-C", str(vault), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(vault), "remote", "add", "origin", "https://example.com/x.git"],
+        check=True,
+    )
+    report = doctor()
+    assert any(f["check"] == "git_remote_present" for f in report["findings"])
+
+
 def test_doctor_clean_then_detects_cleartext(vault):
     assert doctor()["counts"]["critical"] == 0
     # Drop a stray cleartext file under secrets/ -> must be flagged critical.
@@ -98,3 +169,10 @@ def test_doctor_clean_then_detects_cleartext(vault):
     report = doctor()
     assert report["counts"]["critical"] >= 1
     assert any(f["check"] == "cleartext_in_secrets" for f in report["findings"])
+
+
+def test_doctor_ignores_os_noise_under_secrets(vault):
+    # A .DS_Store is git-ignored OS noise, not a plaintext secret -> no finding.
+    (vault / "secrets" / ".DS_Store").write_bytes(b"\x00\x01")
+    report = doctor()
+    assert not any(f["check"] == "cleartext_in_secrets" for f in report["findings"])

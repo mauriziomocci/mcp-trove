@@ -92,6 +92,7 @@ updated: 2026-06-29
 | `trove_add_snippet` | domain, subpath?, title, tags[], lang, body_markdown | creates dirs if missing, writes `<slug>.md` with frontmatter, regenerates INDEX; returns path |
 | `trove_add_secret` | category, title, fields{}, notes? | writes encrypted file under `secrets/`, updates INDEX with title+category only (never values); returns path |
 | `trove_get_secret` | id/path | decrypts on the fly (needs key present), returns fields; never written to disk |
+| `trove_update_secret` | name, category?, set_fields?, remove_fields?, notes?, tags? | decrypts, applies a partial change, re-encrypts; preserves created date; values never written to disk |
 | `trove_search` | query, tags?, kind(snippet\|secret\|all) | full-text over snippets, metadata-only over secrets; returns matches |
 | `trove_list` / `trove_index` | — | regenerate / read INDEX |
 | `trove_remove` | path | deletes entry, regenerates INDEX |
@@ -118,7 +119,12 @@ updated: 2026-06-29
   ciphertext into the repo — no transient plaintext in the working tree.
 - INDEX and search never expose secret values.
 - `trove_init` installs a pre-commit secret scanner as an independent safety
-  net (defense in depth) and forces a key-backup reminder.
+  net (defense in depth), auto-enables it when the vault is a git repo, and
+  forces a key-backup reminder.
+- **Cleartext metadata caveat:** the `.meta.yaml` sidecars (titles, tags,
+  categories) are cleartext and travel with the vault. Only secret *values* are
+  encrypted. The remote must be private; `trove_doctor` reminds when a remote is
+  configured.
 
 ## 8. Model-vs-code division
 

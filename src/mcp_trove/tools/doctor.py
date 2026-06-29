@@ -6,12 +6,35 @@ actionable suggestion. Never modifies anything; never decrypts.
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 from mcp_trove.config import load_config
 from mcp_trove.vault import parse_frontmatter, relative
 
 _SECRET_KEY_MARKER = "AGE-SECRET-KEY-1"
+# OS-generated noise that may appear in any folder; it is git-ignored and is not a
+# plaintext secret, so the cleartext check skips it instead of crying wolf.
+_OS_NOISE = {".DS_Store", "Thumbs.db"}
+
+
+def _git_remotes(vault) -> list[str]:
+    """Return configured git remote URLs for the vault, or [] if none / not git.
+
+    Best-effort and offline: it cannot tell a private remote from a public one, so
+    callers use this only to *remind* the user, never to assert a leak."""
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(vault), "remote", "-v"],
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode != 0:
+            return []
+        urls = {line.split()[1] for line in res.stdout.splitlines() if len(line.split()) >= 2}
+        return sorted(urls)
+    except (OSError, subprocess.SubprocessError):
+        return []
 
 
 def _finding(severity: str, kind: str, where: str, message: str, fix: str) -> dict[str, str]:
@@ -46,7 +69,7 @@ def doctor() -> dict[str, Any]:
     secrets_root = vault / "secrets"
     if secrets_root.exists():
         for path in secrets_root.rglob("*"):
-            if path.is_dir():
+            if path.is_dir() or path.name in _OS_NOISE:
                 continue
             name = path.name
             if name.endswith(".age"):
@@ -112,6 +135,20 @@ def doctor() -> dict[str, Any]:
                     "remove it immediately and rotate the key; it must never be committed",
                 )
             )
+
+    # Git remote reminder: secret VALUES are encrypted, but the .meta.yaml sidecars
+    # (titles, tags, categories) are cleartext and get pushed. If a remote exists,
+    # remind the user it must be private and titles should not carry sensitive info.
+    remotes = _git_remotes(vault)
+    if remotes:
+        findings.append(
+            _finding(
+                "info", "git_remote_present", ", ".join(remotes),
+                "the vault has a git remote; secret metadata (titles, tags, categories) "
+                "is stored in cleartext and will be pushed",
+                "ensure the remote is private and keep sensitive details out of secret titles",
+            )
+        )
 
     # Pre-commit safety net present?
     if not (vault / ".githooks" / "pre-commit").exists():

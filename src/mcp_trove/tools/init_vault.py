@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
@@ -61,7 +62,54 @@ Each secret is two files:
 
 The private key lives OUTSIDE this repo. Back it up off-machine: without it the
 secrets are unrecoverable.
+
+Caveat: the `.meta.yaml` sidecars are cleartext and get pushed with the vault.
+Secret VALUES stay encrypted, but titles, tags and category names do not. Keep
+the git remote PRIVATE and avoid putting sensitive details in secret titles
+(prefer "Prod DB" over "Prod DB root password h***").
 """
+
+def _enable_hook(vault: Path) -> tuple[bool, Optional[str]]:
+    """Wire the pre-commit safety net into git when the vault is a git work tree.
+
+    The hook is useless until ``core.hooksPath`` points at ``.githooks``; requiring
+    the user to set it by hand means it is usually never enabled. So: if the vault
+    is a git repo and ``core.hooksPath`` is unset, set it. If the user already set
+    a different hooks path, leave it and return a warning rather than clobbering.
+
+    Returns ``(enabled, warning)``. Any git/environment error degrades gracefully
+    to ``(False, None)`` — enabling the hook is best-effort, never fatal to init.
+    """
+    try:
+        inside = subprocess.run(
+            ["git", "-C", str(vault), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+        )
+        if inside.returncode != 0 or inside.stdout.strip() != "true":
+            return False, None
+        current = subprocess.run(
+            ["git", "-C", str(vault), "config", "--local", "--get", "core.hooksPath"],
+            capture_output=True,
+            text=True,
+        )
+        existing = current.stdout.strip()
+        if existing and existing != ".githooks":
+            return False, (
+                f"core.hooksPath is set to '{existing}', not '.githooks' — left as is. "
+                "Point it at .githooks to enable the trove secret-blocking hook."
+            )
+        if existing == ".githooks":
+            return True, None
+        set_res = subprocess.run(
+            ["git", "-C", str(vault), "config", "--local", "core.hooksPath", ".githooks"],
+            capture_output=True,
+            text=True,
+        )
+        return (set_res.returncode == 0), None
+    except (OSError, subprocess.SubprocessError):
+        return False, None
+
 
 _PRECOMMIT = """\
 #!/bin/sh
@@ -148,6 +196,16 @@ def init_vault(
     if key_generated or key_path.exists():
         warnings.append(pack.msg("key_backup_warning", key_path=str(key_path)))
 
+    # Best-effort: wire the pre-commit hook into git so the safety net is actually live.
+    hooks_enabled, hook_warning = _enable_hook(vault)
+    if hook_warning:
+        warnings.append(hook_warning)
+    next_step = (
+        "Pre-commit secret-blocking hook is active (core.hooksPath = .githooks)."
+        if hooks_enabled
+        else "Enable the safety hook with: git config core.hooksPath .githooks"
+    )
+
     return {
         "message": pack.msg("vault_initialized", path=str(vault)),
         "vault": str(vault),
@@ -155,6 +213,7 @@ def init_vault(
         "key_path": str(key_path),
         "key_generated": key_generated,
         "created": created,
+        "hooks_enabled": hooks_enabled,
         "warnings": warnings,
-        "next_step": "Enable the safety hook with: git config core.hooksPath .githooks",
+        "next_step": next_step,
     }

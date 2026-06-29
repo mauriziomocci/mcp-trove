@@ -127,6 +127,7 @@ secrets through the MCP tools or the `age` CLI.
 | `trove_add_snippet` | Save a plaintext snippet (Markdown + frontmatter) |
 | `trove_add_secret` | Save an encrypted secret + cleartext metadata sidecar |
 | `trove_get_secret` | Decrypt a secret on the fly (needs the private key) |
+| `trove_update_secret` | Partially update a secret (set/remove fields, notes, tags) and re-encrypt |
 | `trove_search` | Full-text over snippets; metadata-only over secrets |
 | `trove_list` / `trove_index` | List entries / regenerate `INDEX.md` |
 | `trove_remove` | Delete an entry and rebuild the index |
@@ -152,8 +153,15 @@ search read only cleartext metadata for secrets, so they can never leak a value.
 - Encryption is delegated to vetted code (`age`/`pyrage`); none is written here.
 - The private key lives outside the repo and is git-ignored.
 - `trove_add_secret` encrypts in memory; plaintext never touches disk.
-- `trove_init` installs a pre-commit hook that blocks committing a private key.
-- `trove_doctor` flags any cleartext under `secrets/` or a key in the tree.
+- `trove_init` installs a pre-commit hook that blocks committing a private key,
+  and enables it automatically (`core.hooksPath`) when the vault is a git repo.
+- `trove_doctor` flags any cleartext under `secrets/` or a key in the tree, and
+  reminds you when a git remote is configured.
+
+**Cleartext metadata caveat.** Secret *values* are encrypted, but the
+`.meta.yaml` sidecars — titles, tags, category names — are cleartext and get
+pushed with the vault. Keep the remote **private** and avoid putting sensitive
+details in secret titles (prefer "Prod DB" over "Prod DB root password h***").
 
 ## Development
 
@@ -281,6 +289,11 @@ gli `snippets/`; i segreti gestiscili con gli strumenti MCP o con la CLI `age`.
 - La chiave privata vive fuori dal repo ed è esclusa da git.
 - `trove_add_secret` cifra in memoria; il testo in chiaro non tocca mai il disco.
 - `trove_init` installa un hook pre-commit che blocca il commit di una chiave
-  privata.
+  privata e lo abilita da solo (`core.hooksPath`) quando il vault è un repo git.
 - `trove_doctor` segnala qualsiasi file in chiaro sotto `secrets/` o una chiave
-  nell'albero.
+  nell'albero, e ti avvisa quando è configurato un remote git.
+
+**Caveat metadati in chiaro.** I *valori* dei segreti sono cifrati, ma i sidecar
+`.meta.yaml` — titoli, tag, nomi di categoria — sono in chiaro e vengono pushati
+col vault. Tieni il remote **privato** ed evita dettagli sensibili nei titoli
+(meglio "Prod DB" che "Prod DB password di root h***").
